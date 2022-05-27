@@ -1,7 +1,8 @@
 import { appendFileSync, existsSync, promises, readFileSync, writeFileSync } from 'fs'
-import { homedir, tmpdir } from 'os'
-import { join, sep } from 'path'
+import { tmpdir } from 'os'
+import { sep } from 'path'
 import { cwd, env } from 'process'
+import { fileURLToPath } from 'url'
 
 import del from 'del'
 import execa from 'execa'
@@ -17,6 +18,7 @@ const { mkdtemp } = promises
 
 // eslint-disable-next-line no-magic-numbers
 const VERDACCIO_TIMEOUT_MILLISECONDS = 60 * 1000
+const VERDACCIO_PACKAGE_STORAGE_LIMIT = 2000
 const START_PORT_RANGE = 5000
 const END_PORT_RANGE = 5000
 
@@ -24,8 +26,12 @@ const END_PORT_RANGE = 5000
  * Gets the verdaccio configuration
  * @param {string} storage The location where the artifacts are stored
  */
-const getVerdaccioConfig = (storage) => ({
-  storage,
+const getVerdaccioConfig = () => ({
+  store: {
+    memory: {
+      limit: VERDACCIO_PACKAGE_STORAGE_LIMIT,
+    },
+  },
   web: { title: 'Test Registry' },
   max_body_size: '128mb',
   // Disable creation of users this is only meant for integration testing
@@ -35,6 +41,8 @@ const getVerdaccioConfig = (storage) => ({
   uplinks: {
     npmjs: {
       url: 'https://registry.npmjs.org/',
+      maxage: '60m',
+      cache: true,
     },
   },
   packages: {
@@ -64,15 +72,14 @@ export const startRegistry = async () => {
   // number in parallel
   const startPort = Math.floor(Math.random() * END_PORT_RANGE) + START_PORT_RANGE
   const freePort = await getPort({ host: 'localhost', port: startPort })
-  const storage = await mkdtemp(`${tmpdir()}${sep}verdaccio-`)
   return new Promise((resolve, reject) => {
     setTimeout(() => {
       reject(new Error('Starting Verdaccio Timed out'))
     }, VERDACCIO_TIMEOUT_MILLISECONDS)
 
-    verdaccio.default(getVerdaccioConfig(storage), freePort, storage, '1.0.0', 'verdaccio', (webServer, { port }) => {
+    verdaccio.default(getVerdaccioConfig(), freePort, undefined, '1.0.0', 'verdaccio', (webServer, { port }) => {
       webServer.listen(port, 'localhost', () => {
-        resolve({ url: new URL(`http://localhost:${port}/`), storage })
+        resolve({ url: new URL(`http://localhost:${port}/`) })
       })
     })
   })
@@ -88,25 +95,20 @@ export const startRegistry = async () => {
  * }
  */
 export const setup = async () => {
-  const { storage, url } = await startRegistry()
+  const { url } = await startRegistry()
   const workspace = await mkdtemp(`${tmpdir()}${sep}e2e-test-`)
 
-  const npmrc = join(homedir(), '.npmrc')
+  const npmrc = fileURLToPath(new URL('../../.npmrc', import.meta.url))
   const registryWithAuth = `//${url.hostname}:${url.port}/:_authToken=dummy`
   let backupNpmrc
 
   /** Cleans up everything */
   const cleanup = async () => {
-    // restore ~/.npmrc
-    if (backupNpmrc) {
-      writeFileSync(npmrc, backupNpmrc)
-    } else {
-      await rmdirRecursiveAsync(npmrc)
-    }
     // remote temp folders
-    await rmdirRecursiveAsync(storage)
     await rmdirRecursiveAsync(workspace)
   }
+
+  env.npm_config_registry = url
 
   try {
     if (existsSync(npmrc)) {
@@ -123,19 +125,23 @@ export const setup = async () => {
 
     console.log(`------------------------------------------
   Published to ${url}
-  Verdaccio: ${storage}
+  Verdaccio: in-memory
   Workspace: ${workspace}
 ------------------------------------------`)
-
-    writeFileSync(join(workspace, '.npmrc'), registryWithAuth, 'utf-8')
   } catch (error_) {
     await cleanup()
     throw new Error(
       `npm publish failed for registry ${url.href}
-Be sure not to have a ~/.npmrc in your home folder that specifies a different registry.
 
 ${error_ instanceof Error ? error_.message : error_}`,
     )
+  } finally {
+    // restore ~/.npmrc
+    if (backupNpmrc) {
+      writeFileSync(npmrc, backupNpmrc)
+    } else {
+      await rmdirRecursiveAsync(npmrc)
+    }
   }
 
   return {
