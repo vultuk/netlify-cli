@@ -26,7 +26,7 @@ const deploySite = async (
     branch,
     concurrentHash = DEFAULT_CONCURRENT_HASH,
     concurrentUpload = DEFAULT_CONCURRENT_UPLOAD,
-    configPath = null,
+    configPath = 'apps/website',
     deployId: deployIdOpt = null,
     deployTimeout = DEFAULT_DEPLOY_TIMEOUT,
     draft = false,
